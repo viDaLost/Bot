@@ -3,7 +3,7 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Callb
 from telegram import Update
 
 # === Настройки ===
-ADMIN_CHAT_ID = 'ВАШ_CHAT_ID'  # ← Замени на свой Chat ID (через @userinfobot)
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ← Замени на свой Chat ID (через @userinfobot)
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Устанавливается через переменную окружения
 
 # Хранилище для привязки chat_id пользователя к администратору
