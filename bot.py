@@ -321,7 +321,7 @@ async def schedule_or_reschedule(job_id: int, owner_id: int):
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    if not is_admin(message.fromuser.id):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ У вас нет доступа к управлению ботом.")
         return
     await message.answer(
