@@ -1,7 +1,8 @@
 import asyncio
+import shutil
 from datetime import datetime
 from pathlib import Path
-import shutil
+from contextlib import suppress
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
@@ -14,6 +15,7 @@ from aiogram.types import (
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiogram.exceptions import TelegramBadRequest
 from geopy.geocoders import Nominatim
 import pytz
 
@@ -121,6 +123,22 @@ def is_admin(user_id: int) -> bool:
     return not ADMIN_IDS or user_id in ADMIN_IDS
 
 
+# ---------- Вспомогательные функции для интерфейса ----------
+
+async def delete_user_and_prompt_messages(message: Message, state: FSMContext):
+    """Удаляет сообщение пользователя и предыдущее сообщение-запрос от бота."""
+    with suppress(TelegramBadRequest):
+        await message.delete()
+    
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_msg_id")
+    if prompt_msg_id:
+        with suppress(TelegramBadRequest):
+            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
+
+
+# ---------- Клавиатуры ----------
+
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Расписания", callback_data="schedules_menu")],
@@ -130,10 +148,8 @@ def main_menu():
         [InlineKeyboardButton(text="ℹ️ Инструкция", callback_data="help")],
     ])
 
-
 def back_to_menu():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")]])
-
 
 def targets_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -142,7 +158,6 @@ def targets_menu_keyboard():
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")],
     ])
 
-
 def schedules_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Создать расписание", callback_data="create_job")],
@@ -150,14 +165,12 @@ def schedules_menu_keyboard():
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")],
     ])
 
-
 def backup_menu_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Экспорт bot.db", callback_data="backup_export")],
         [InlineKeyboardButton(text="📥 Импорт bot.db", callback_data="backup_import")],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")],
     ])
-
 
 def timezone_keyboard(auto_tz: str | None = None):
     rows = []
@@ -170,7 +183,6 @@ def timezone_keyboard(auto_tz: str | None = None):
     rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
 def schedule_type_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Один раз", callback_data="schedule_once")],
@@ -179,7 +191,6 @@ def schedule_type_keyboard():
         [InlineKeyboardButton(text="📆 Каждый месяц", callback_data="schedule_monthly")],
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")],
     ])
-
 
 def weekday_keyboard(selected: set[str]):
     rows = []
@@ -196,7 +207,6 @@ def weekday_keyboard(selected: set[str]):
     rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
 def style_keyboard(prefix: str = "style"):
     rows = []
     for key, label in STYLE_TITLES.items():
@@ -204,13 +214,11 @@ def style_keyboard(prefix: str = "style"):
     rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
 def title_keyboard():
     rows = [[InlineKeyboardButton(text=t, callback_data=f"title_{i}")] for i, t in enumerate(TITLE_PRESETS)]
     rows.append([InlineKeyboardButton(text="✏️ Свой заголовок", callback_data="title_custom")])
     rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
 
 def text_options_keyboard(show_city: bool, show_weekday: bool):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -220,14 +228,12 @@ def text_options_keyboard(show_city: bool, show_weekday: bool):
         [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")],
     ])
 
-
 def preview_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Сохранить расписание", callback_data="save_job")],
         [InlineKeyboardButton(text="✏️ Изменить стиль", callback_data="preview_change_style")],
         [InlineKeyboardButton(text="❌ Отменить", callback_data="menu")],
     ])
-
 
 def auto_timezone_from_address(address: str) -> str | None:
     low = address.lower()
@@ -250,7 +256,6 @@ def auto_timezone_from_address(address: str) -> str | None:
             return tz
     return None
 
-
 def format_schedule_line(job) -> str:
     kind = job["schedule_type"]
     if kind == "once":
@@ -264,7 +269,6 @@ def format_schedule_line(job) -> str:
         return f"каждый месяц, {job['month_day']} числа в {job['publish_time']}"
     return f"{kind} {job['publish_time']}"
 
-
 def validate_time_text(text: str) -> bool:
     try:
         datetime.strptime(text, "%H:%M")
@@ -272,12 +276,10 @@ def validate_time_text(text: str) -> bool:
     except ValueError:
         return False
 
-
 def validate_future_once(publish_date: str, publish_time: str, timezone: str) -> bool:
     tz = pytz.timezone(timezone)
     run_dt = tz.localize(datetime.strptime(f"{publish_date} {publish_time}", "%Y-%m-%d %H:%M"))
     return run_dt > datetime.now(tz)
-
 
 async def send_creation_preview(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -310,16 +312,16 @@ async def send_creation_preview(message: Message, state: FSMContext):
     )
     await state.set_state(CreateJobState.preview)
 
-
 async def schedule_or_reschedule(job_id: int, owner_id: int):
     job = await get_job_by_id(job_id, owner_id)
     if job:
         schedule_single_job(bot, job)
 
+# ---------- Базовые команды ----------
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    if not is_admin(message.from_user.id):
+    if not is_admin(message.fromuser.id):
         await message.answer("⛔ У вас нет доступа к управлению ботом.")
         return
     await message.answer(
@@ -329,23 +331,21 @@ async def start(message: Message):
         parse_mode="HTML",
     )
 
-
 @dp.message(Command("menu"))
 async def menu_command(message: Message, state: FSMContext):
     if is_admin(message.from_user.id):
         await state.clear()
         await message.answer("Главное меню:", reply_markup=main_menu())
 
-
 @dp.callback_query(F.data == "menu")
 async def menu_callback(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     await state.clear()
     await callback.message.edit_text("Главное меню:", reply_markup=main_menu())
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "help")
 async def help_callback(callback: CallbackQuery):
+    await callback.answer()
     await callback.message.edit_text(
         "ℹ️ <b>Инструкция</b>\n\n"
         "1. Добавьте бота в канал или чат.\n"
@@ -357,50 +357,48 @@ async def help_callback(callback: CallbackQuery):
         reply_markup=back_to_menu(),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 # ---------- Каналы и чаты ----------
 
 @dp.callback_query(F.data == "targets_menu")
 async def targets_menu(callback: CallbackQuery):
-    await callback.message.edit_text("📢 <b>Каналы и чаты</b>", reply_markup=targets_menu_keyboard(), parse_mode="HTML")
     await callback.answer()
-
+    await callback.message.edit_text("📢 <b>Каналы и чаты</b>", reply_markup=targets_menu_keyboard(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "add_target")
 async def add_target_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     await state.set_state(AddTargetState.waiting_chat_id)
+    await state.update_data(prompt_msg_id=callback.message.message_id)
     await callback.message.edit_text(
         "Отправьте ID канала/чата.\n\n"
         "Примеры:\n<code>@my_channel</code>\n<code>-1001234567890</code>",
         reply_markup=back_to_menu(),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 @dp.message(AddTargetState.waiting_chat_id)
 async def add_target_chat_id(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
     await state.update_data(chat_id=message.text.strip())
     await state.set_state(AddTargetState.waiting_title)
-    await message.answer("Теперь отправьте название, например: <b>Основной канал</b>", parse_mode="HTML")
-
+    new_msg = await message.answer("Теперь отправьте название, например: <b>Основной канал</b>", parse_mode="HTML")
+    await state.update_data(prompt_msg_id=new_msg.message_id)
 
 @dp.message(AddTargetState.waiting_title)
 async def add_target_title(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
     data = await state.get_data()
     await add_target(message.from_user.id, data["chat_id"], message.text.strip())
     await state.clear()
     await message.answer("✅ Канал/чат добавлен.", reply_markup=targets_menu_keyboard())
 
-
 @dp.callback_query(F.data == "targets_list")
 async def targets_list(callback: CallbackQuery):
+    await callback.answer()
     targets = await get_targets(callback.from_user.id)
     if not targets:
         await callback.message.edit_text("Каналы и чаты ещё не добавлены.", reply_markup=targets_menu_keyboard())
-        await callback.answer()
         return
 
     text = "📋 <b>Каналы и чаты</b>\n\n"
@@ -413,22 +411,19 @@ async def targets_list(callback: CallbackQuery):
         ])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="targets_menu")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("target_check_"))
 async def target_check(callback: CallbackQuery):
+    await callback.answer()
     target_id = int(callback.data.replace("target_check_", ""))
     target = await get_target_by_id(target_id)
     if not target:
-        await callback.answer("Канал/чат не найден", show_alert=True)
+        await callback.message.answer("Канал/чат не найден")
         return
     try:
         chat = await bot.get_chat(target["chat_id"])
-        await callback.answer("✅ Доступ есть", show_alert=True)
         await callback.message.answer(f"✅ Бот видит канал/чат: <b>{getattr(chat, 'title', None) or getattr(chat, 'full_name', None) or chat.id}</b>", parse_mode="HTML")
     except Exception as e:
-        await callback.answer("❌ Нет доступа", show_alert=True)
         await callback.message.answer(
             "❌ Бот не смог получить доступ к каналу/чату.\n\n"
             "Проверь, что бот добавлен в канал и является администратором.\n"
@@ -436,55 +431,51 @@ async def target_check(callback: CallbackQuery):
             parse_mode="HTML",
         )
 
-
 @dp.callback_query(F.data.startswith("target_delete_"))
 async def target_delete(callback: CallbackQuery):
+    await callback.answer()
     target_id = int(callback.data.replace("target_delete_", ""))
     await delete_target(target_id, callback.from_user.id)
     await callback.message.edit_text("🗑 Канал/чат и связанные расписания удалены.", reply_markup=targets_menu_keyboard())
-    await callback.answer()
-
 
 # ---------- Расписания ----------
 
 @dp.callback_query(F.data == "schedules_menu")
 async def schedules_menu(callback: CallbackQuery):
-    await callback.message.edit_text("📅 <b>Расписания</b>", reply_markup=schedules_menu_keyboard(), parse_mode="HTML")
     await callback.answer()
-
+    await callback.message.edit_text("📅 <b>Расписания</b>", reply_markup=schedules_menu_keyboard(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "create_job")
 async def create_job_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     targets = await get_targets(callback.from_user.id)
     if not targets:
         await callback.message.edit_text("Сначала добавьте хотя бы один канал/чат.", reply_markup=targets_menu_keyboard())
-        await callback.answer()
         return
 
     rows = [[InlineKeyboardButton(text=f"📢 {t['title']}", callback_data=f"target_{t['id']}")] for t in targets]
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="schedules_menu")])
     await state.set_state(CreateJobState.choosing_target)
     await callback.message.edit_text("Выберите, куда отправлять картинку:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-    await callback.answer()
-
 
 @dp.callback_query(F.data.regexp(r"^target_\d+$"))
 async def choose_target(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     if not callback.data.replace("target_", "").isdigit():
         return
     await state.update_data(target_id=int(callback.data.replace("target_", "")))
     await state.set_state(CreateJobState.choosing_location)
+    await state.update_data(prompt_msg_id=callback.message.message_id)
     await callback.message.edit_text(
         "📍 Отправьте город или локацию.\n\n"
         "Например: <code>Ессентуки</code>, <code>Москва</code>, <code>Amsterdam</code>",
         reply_markup=back_to_menu(),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 @dp.message(CreateJobState.choosing_location)
 async def search_location(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
     query = message.text.strip()
     try:
         results = geocoder.geocode(query, language="ru", exactly_one=False, limit=5, timeout=10)
@@ -492,7 +483,8 @@ async def search_location(message: Message, state: FSMContext):
         results = None
 
     if not results:
-        await message.answer("Не удалось найти локацию. Попробуйте написать город и страну точнее.")
+        new_msg = await message.answer("Не удалось найти локацию. Попробуйте написать город и страну точнее.", reply_markup=back_to_menu())
+        await state.update_data(prompt_msg_id=new_msg.message_id)
         return
 
     candidates = []
@@ -508,16 +500,17 @@ async def search_location(message: Message, state: FSMContext):
     rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")])
 
     await state.update_data(location_candidates=candidates)
-    await message.answer("Выберите найденную локацию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-
+    new_msg = await message.answer("Выберите найденную локацию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await state.update_data(prompt_msg_id=new_msg.message_id)
 
 @dp.callback_query(F.data.startswith("loc_"))
 async def choose_location(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     index = int(callback.data.replace("loc_", ""))
     data = await state.get_data()
     candidates = data.get("location_candidates", [])
     if index >= len(candidates):
-        await callback.answer("Локация не найдена", show_alert=True)
+        await callback.message.answer("Локация не найдена")
         return
 
     loc = candidates[index]
@@ -534,17 +527,15 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
         reply_markup=timezone_keyboard(auto_tz),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "tz_manual")
 async def timezone_manual(callback: CallbackQuery):
-    await callback.message.edit_text("Выберите часовой пояс:", reply_markup=timezone_keyboard(None))
     await callback.answer()
-
+    await callback.message.edit_text("Выберите часовой пояс:", reply_markup=timezone_keyboard(None))
 
 @dp.callback_query(F.data.startswith("tz_"))
 async def choose_timezone(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     timezone = callback.data.replace("tz_", "")
     await state.update_data(timezone=timezone)
     await state.set_state(CreateJobState.choosing_schedule_type)
@@ -553,42 +544,38 @@ async def choose_timezone(callback: CallbackQuery, state: FSMContext):
         reply_markup=schedule_type_keyboard(),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "schedule_once")
 async def schedule_once(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(schedule_type="once")
+    await callback.answer()
+    await state.update_data(schedule_type="once", prompt_msg_id=callback.message.message_id)
     await state.set_state(CreateJobState.waiting_date)
     await callback.message.edit_text(
         "📅 Отправьте дату в формате <code>2026-05-01</code>.",
         reply_markup=back_to_menu(),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "schedule_daily")
 async def schedule_daily(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(schedule_type="daily", publish_date=None, weekdays="", month_day=None)
+    await callback.answer()
+    await state.update_data(schedule_type="daily", publish_date=None, weekdays="", month_day=None, prompt_msg_id=callback.message.message_id)
     await state.set_state(CreateJobState.waiting_time)
     await callback.message.edit_text("🕒 Отправьте время публикации: <code>18:30</code>", reply_markup=back_to_menu(), parse_mode="HTML")
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "schedule_weekly")
 async def schedule_weekly(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     await state.update_data(schedule_type="weekly", selected_weekdays=[])
     await state.set_state(CreateJobState.choosing_weekdays)
     await callback.message.edit_text(
         "Выберите один или несколько дней недели:",
         reply_markup=weekday_keyboard(set()),
     )
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("weekday_toggle_"))
 async def weekday_toggle(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     day = callback.data.replace("weekday_toggle_", "")
     data = await state.get_data()
     selected = set(data.get("selected_weekdays", []))
@@ -598,98 +585,101 @@ async def weekday_toggle(callback: CallbackQuery, state: FSMContext):
         selected.add(day)
     await state.update_data(selected_weekdays=list(selected))
     await callback.message.edit_reply_markup(reply_markup=weekday_keyboard(selected))
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "weekday_done")
 async def weekday_done(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     data = await state.get_data()
     selected = data.get("selected_weekdays", [])
     if not selected:
-        await callback.answer("Выберите хотя бы один день", show_alert=True)
+        await callback.message.answer("Выберите хотя бы один день")
         return
     ordered = [key for _, key in WEEKDAYS if key in selected]
-    await state.update_data(weekdays=",".join(ordered))
+    await state.update_data(weekdays=",".join(ordered), prompt_msg_id=callback.message.message_id)
     await state.set_state(CreateJobState.waiting_time)
     await callback.message.edit_text("🕒 Отправьте время публикации: <code>18:30</code>", reply_markup=back_to_menu(), parse_mode="HTML")
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "schedule_monthly")
 async def schedule_monthly(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(schedule_type="monthly")
+    await callback.answer()
+    await state.update_data(schedule_type="monthly", prompt_msg_id=callback.message.message_id)
     await state.set_state(CreateJobState.waiting_month_day)
     await callback.message.edit_text(
         "📆 Напишите число месяца от 1 до 31.\n\nНапример: <code>15</code>",
         reply_markup=back_to_menu(),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 @dp.message(CreateJobState.waiting_date)
 async def set_date(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
     text = message.text.strip()
     try:
         datetime.strptime(text, "%Y-%m-%d")
     except ValueError:
-        await message.answer("Дата должна быть в формате <code>ГГГГ-ММ-ДД</code>.", parse_mode="HTML")
+        new_msg = await message.answer("Дата должна быть в формате <code>ГГГГ-ММ-ДД</code>.", parse_mode="HTML")
+        await state.update_data(prompt_msg_id=new_msg.message_id)
         return
     await state.update_data(publish_date=text)
     await state.set_state(CreateJobState.waiting_time)
-    await message.answer("🕒 Теперь отправьте время публикации: <code>18:30</code>", parse_mode="HTML")
-
+    new_msg = await message.answer("🕒 Теперь отправьте время публикации: <code>18:30</code>", parse_mode="HTML")
+    await state.update_data(prompt_msg_id=new_msg.message_id)
 
 @dp.message(CreateJobState.waiting_month_day)
 async def set_month_day(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
     try:
         day = int(message.text.strip())
     except ValueError:
-        await message.answer("Нужно число от 1 до 31.")
+        new_msg = await message.answer("Нужно число от 1 до 31.")
+        await state.update_data(prompt_msg_id=new_msg.message_id)
         return
     if day < 1 or day > 31:
-        await message.answer("Число месяца должно быть от 1 до 31.")
+        new_msg = await message.answer("Число месяца должно быть от 1 до 31.")
+        await state.update_data(prompt_msg_id=new_msg.message_id)
         return
     await state.update_data(month_day=day, publish_date=None, weekdays="")
     await state.set_state(CreateJobState.waiting_time)
-    await message.answer("🕒 Теперь отправьте время публикации: <code>18:30</code>", parse_mode="HTML")
-
+    new_msg = await message.answer("🕒 Теперь отправьте время публикации: <code>18:30</code>", parse_mode="HTML")
+    await state.update_data(prompt_msg_id=new_msg.message_id)
 
 @dp.message(CreateJobState.waiting_time)
 async def set_time(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
     text = message.text.strip()
     if not validate_time_text(text):
-        await message.answer("Время должно быть в формате <code>ЧЧ:ММ</code>, например <code>18:30</code>.", parse_mode="HTML")
+        new_msg = await message.answer("Время должно быть в формате <code>ЧЧ:ММ</code>, например <code>18:30</code>.", parse_mode="HTML")
+        await state.update_data(prompt_msg_id=new_msg.message_id)
         return
 
     data = await state.get_data()
     if data.get("schedule_type") == "once":
         if not validate_future_once(data["publish_date"], text, data["timezone"]):
-            await message.answer("Эта дата и время уже прошли для выбранного часового пояса. Укажите будущее время.")
+            new_msg = await message.answer("Эта дата и время уже прошли для выбранного часового пояса. Укажите будущее время.")
+            await state.update_data(prompt_msg_id=new_msg.message_id)
             return
 
     await state.update_data(publish_time=text)
     await state.set_state(CreateJobState.choosing_style)
-    await message.answer("🎨 Выберите стиль картинки:", reply_markup=style_keyboard("style"))
-
+    new_msg = await message.answer("🎨 Выберите стиль картинки:", reply_markup=style_keyboard("style"))
+    await state.update_data(prompt_msg_id=new_msg.message_id)
 
 @dp.callback_query(F.data.startswith("style_"))
 async def choose_style(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     style = callback.data.replace("style_", "")
     await state.update_data(image_style=style)
     await state.set_state(CreateJobState.choosing_title)
     await callback.message.edit_text("Выберите заголовок на картинке:", reply_markup=title_keyboard())
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("title_"))
 async def choose_title(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     value = callback.data.replace("title_", "")
     if value == "custom":
         await state.set_state(EditJobState.waiting_title)
-        await state.update_data(custom_title_for_creation=True)
+        await state.update_data(custom_title_for_creation=True, prompt_msg_id=callback.message.message_id)
         await callback.message.edit_text("Напишите свой заголовок для картинки:", reply_markup=back_to_menu())
-        await callback.answer()
         return
     title = TITLE_PRESETS[int(value)]
     await state.update_data(title_text=title, show_city=False, show_weekday=False)
@@ -698,16 +688,16 @@ async def choose_title(callback: CallbackQuery, state: FSMContext):
         "Настройте дополнительные элементы на картинке:",
         reply_markup=text_options_keyboard(False, False),
     )
-    await callback.answer()
-
 
 @dp.message(EditJobState.waiting_title)
 async def title_text_input(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
     data = await state.get_data()
     if data.get("custom_title_for_creation"):
         await state.update_data(title_text=message.text.strip()[:40], show_city=False, show_weekday=False, custom_title_for_creation=False)
         await state.set_state(CreateJobState.choosing_text_options)
-        await message.answer("Настройте дополнительные элементы на картинке:", reply_markup=text_options_keyboard(False, False))
+        new_msg = await message.answer("Настройте дополнительные элементы на картинке:", reply_markup=text_options_keyboard(False, False))
+        await state.update_data(prompt_msg_id=new_msg.message_id)
         return
 
     job_id = data.get("edit_job_id")
@@ -717,44 +707,40 @@ async def title_text_input(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("✅ Заголовок изменён.", reply_markup=schedules_menu_keyboard())
 
-
 @dp.callback_query(F.data == "opt_city")
 async def opt_city(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     data = await state.get_data()
     new_value = not bool(data.get("show_city", False))
     await state.update_data(show_city=new_value)
     await callback.message.edit_reply_markup(reply_markup=text_options_keyboard(new_value, bool(data.get("show_weekday", False))))
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "opt_weekday")
 async def opt_weekday(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     data = await state.get_data()
     new_value = not bool(data.get("show_weekday", False))
     await state.update_data(show_weekday=new_value)
     await callback.message.edit_reply_markup(reply_markup=text_options_keyboard(bool(data.get("show_city", False)), new_value))
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "opt_preview")
 async def opt_preview(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await send_creation_preview(callback.message, state)
 
-
 @dp.callback_query(F.data == "preview_change_style")
 async def preview_change_style(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     await state.set_state(CreateJobState.choosing_style)
     await callback.message.edit_text("🎨 Выберите стиль картинки:", reply_markup=style_keyboard("style"))
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "save_job")
 async def save_job(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     data = await state.get_data()
     target = await get_target_by_id(data["target_id"])
     if not target:
-        await callback.answer("Канал/чат не найден", show_alert=True)
+        await callback.message.answer("Канал/чат не найден")
         return
 
     job_id = await add_job(
@@ -786,15 +772,13 @@ async def save_job(callback: CallbackQuery, state: FSMContext):
         reply_markup=schedules_menu_keyboard(),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "jobs_list")
 async def jobs_list(callback: CallbackQuery):
+    await callback.answer()
     jobs = await get_jobs(callback.from_user.id)
     if not jobs:
         await callback.message.edit_text("Расписаний пока нет.", reply_markup=schedules_menu_keyboard())
-        await callback.answer()
         return
 
     text = "📋 <b>Расписания</b>\n\n"
@@ -810,15 +794,14 @@ async def jobs_list(callback: CallbackQuery):
         rows.append([InlineKeyboardButton(text=f"⚙️ Управлять ID {job['id']}", callback_data=f"job_manage_{job['id']}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="schedules_menu")])
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("job_manage_"))
 async def job_manage(callback: CallbackQuery):
+    await callback.answer()
     job_id = int(callback.data.replace("job_manage_", ""))
     job = await get_job_by_id(job_id, callback.from_user.id)
     if not job:
-        await callback.answer("Расписание не найдено", show_alert=True)
+        await callback.message.answer("Расписание не найдено")
         return
 
     pause_text = "⏸ Пауза" if job["status"] == "active" else "▶️ Возобновить"
@@ -841,8 +824,6 @@ async def job_manage(callback: CallbackQuery):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 async def make_job_image(job):
     target_date = job["publish_date"] if job["schedule_type"] == "once" else datetime.now(pytz.timezone(job["timezone"])).strftime("%Y-%m-%d")
@@ -857,43 +838,41 @@ async def make_job_image(job):
         show_weekday=bool(job["show_weekday"]),
     ), target_date, sunset_time
 
-
 @dp.callback_query(F.data.startswith("job_preview_"))
 async def job_preview(callback: CallbackQuery):
+    await callback.answer()
     job_id = int(callback.data.replace("job_preview_", ""))
     job = await get_job_by_id(job_id, callback.from_user.id)
     if not job:
-        await callback.answer("Расписание не найдено", show_alert=True)
+        await callback.message.answer("Расписание не найдено")
         return
     image_path, _, _ = await make_job_image(job)
     await callback.message.answer_photo(FSInputFile(image_path))
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("job_test_"))
 async def job_test(callback: CallbackQuery):
+    await callback.answer()
     job_id = int(callback.data.replace("job_test_", ""))
     job = await get_job_by_id(job_id, callback.from_user.id)
     if not job:
-        await callback.answer("Расписание не найдено", show_alert=True)
+        await callback.message.answer("Расписание не найдено")
         return
     try:
         image_path, target_date, sunset_time = await make_job_image(job)
         await bot.send_photo(chat_id=job["chat_id"], photo=FSInputFile(image_path))
         await add_send_log(job_id, callback.from_user.id, job["target_id"], "success", target_date, sunset_time)
-        await callback.answer("✅ Тестовая картинка отправлена", show_alert=True)
+        await callback.message.answer("✅ Тестовая картинка отправлена")
     except Exception as e:
         await add_send_log(job_id, callback.from_user.id, job["target_id"], "error", "", "", str(e)[:900])
-        await callback.answer("❌ Ошибка отправки", show_alert=True)
         await callback.message.answer(f"❌ Ошибка тестовой отправки:\n<code>{str(e)[:900]}</code>", parse_mode="HTML")
-
 
 @dp.callback_query(F.data.startswith("job_toggle_"))
 async def job_toggle(callback: CallbackQuery):
+    await callback.answer()
     job_id = int(callback.data.replace("job_toggle_", ""))
     job = await get_job_by_id(job_id, callback.from_user.id)
     if not job:
-        await callback.answer("Расписание не найдено", show_alert=True)
+        await callback.message.answer("Расписание не найдено")
         return
     new_status = "paused" if job["status"] == "active" else "active"
     await update_job_fields(job_id, callback.from_user.id, status=new_status)
@@ -902,32 +881,30 @@ async def job_toggle(callback: CallbackQuery):
     else:
         await schedule_or_reschedule(job_id, callback.from_user.id)
     await callback.message.edit_text(f"✅ Новый статус: <b>{new_status}</b>", reply_markup=schedules_menu_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("job_delete_"))
 async def job_delete(callback: CallbackQuery):
+    await callback.answer()
     job_id = int(callback.data.replace("job_delete_", ""))
     remove_scheduled_job(job_id)
     await delete_job(job_id, callback.from_user.id)
     await callback.message.edit_text("🗑 Расписание удалено.", reply_markup=schedules_menu_keyboard())
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("job_edit_time_"))
 async def job_edit_time(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     job_id = int(callback.data.replace("job_edit_time_", ""))
-    await state.update_data(edit_job_id=job_id)
+    await state.update_data(edit_job_id=job_id, prompt_msg_id=callback.message.message_id)
     await state.set_state(EditJobState.waiting_time)
     await callback.message.edit_text("Напишите новое время в формате <code>18:30</code>", reply_markup=back_to_menu(), parse_mode="HTML")
-    await callback.answer()
-
 
 @dp.message(EditJobState.waiting_time)
 async def edit_time_save(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
     text = message.text.strip()
     if not validate_time_text(text):
-        await message.answer("Время должно быть в формате <code>ЧЧ:ММ</code>.", parse_mode="HTML")
+        new_msg = await message.answer("Время должно быть в формате <code>ЧЧ:ММ</code>.", parse_mode="HTML")
+        await state.update_data(prompt_msg_id=new_msg.message_id)
         return
     data = await state.get_data()
     job_id = data["edit_job_id"]
@@ -936,18 +913,17 @@ async def edit_time_save(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Время изменено.", reply_markup=schedules_menu_keyboard())
 
-
 @dp.callback_query(F.data.startswith("job_edit_style_"))
 async def job_edit_style(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     job_id = int(callback.data.replace("job_edit_style_", ""))
     await state.update_data(edit_job_id=job_id)
     await state.set_state(EditJobState.choosing_style)
     await callback.message.edit_text("Выберите новый стиль:", reply_markup=style_keyboard("editstyle"))
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("editstyle_"))
 async def edit_style_save(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     style = callback.data.replace("editstyle_", "")
     data = await state.get_data()
     job_id = data["edit_job_id"]
@@ -955,26 +931,24 @@ async def edit_style_save(callback: CallbackQuery, state: FSMContext):
     await schedule_or_reschedule(job_id, callback.from_user.id)
     await state.clear()
     await callback.message.edit_text("✅ Стиль изменён.", reply_markup=schedules_menu_keyboard())
-    await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("job_edit_title_"))
 async def job_edit_title(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     job_id = int(callback.data.replace("job_edit_title_", ""))
-    await state.update_data(edit_job_id=job_id, custom_title_for_creation=False)
+    await state.update_data(edit_job_id=job_id, custom_title_for_creation=False, prompt_msg_id=callback.message.message_id)
     await state.set_state(EditJobState.waiting_title)
     await callback.message.edit_text("Напишите новый заголовок для картинки:", reply_markup=back_to_menu())
-    await callback.answer()
 
 
 # ---------- История и резервные копии ----------
 
 @dp.callback_query(F.data == "logs")
 async def logs(callback: CallbackQuery):
+    await callback.answer()
     logs_list = await get_send_logs(callback.from_user.id, 20)
     if not logs_list:
         await callback.message.edit_text("История отправок пока пустая.", reply_markup=back_to_menu())
-        await callback.answer()
         return
 
     text = "🕘 <b>История отправок</b>\n\n"
@@ -987,47 +961,55 @@ async def logs(callback: CallbackQuery):
             text += f"Ошибка: <code>{row['error'][:160]}</code>\n"
         text += "\n"
     await callback.message.edit_text(text[:3900], reply_markup=back_to_menu(), parse_mode="HTML")
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "backup_menu")
 async def backup_menu(callback: CallbackQuery):
-    await callback.message.edit_text("💾 <b>Резервная копия</b>", reply_markup=backup_menu_keyboard(), parse_mode="HTML")
     await callback.answer()
-
+    await callback.message.edit_text("💾 <b>Резервная копия</b>", reply_markup=backup_menu_keyboard(), parse_mode="HTML")
 
 @dp.callback_query(F.data == "backup_export")
 async def backup_export(callback: CallbackQuery):
+    await callback.answer()
     db_path = Path(DATABASE_PATH)
     if not db_path.exists():
-        await callback.answer("База ещё не создана", show_alert=True)
+        await callback.message.answer("База ещё не создана")
         return
     await callback.message.answer_document(FSInputFile(str(db_path)), caption="Резервная копия bot.db")
-    await callback.answer()
-
 
 @dp.callback_query(F.data == "backup_import")
 async def backup_import(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     await state.set_state(ImportBackupState.waiting_file)
+    await state.update_data(prompt_msg_id=callback.message.message_id)
     await callback.message.edit_text(
         "📥 Отправьте файл <b>bot.db</b>.\n\n"
         "Важно: импорт заменит текущую базу. После импорта сервер лучше перезапустить.",
         reply_markup=back_to_menu(),
         parse_mode="HTML",
     )
-    await callback.answer()
-
 
 @dp.message(ImportBackupState.waiting_file, F.document)
 async def import_backup_file(message: Message, state: FSMContext):
+    await delete_user_and_prompt_messages(message, state)
+    
     if not message.document.file_name.endswith(".db"):
-        await message.answer("Нужен файл базы с расширением .db")
+        new_msg = await message.answer("Нужен файл базы с расширением .db")
+        await state.update_data(prompt_msg_id=new_msg.message_id)
         return
+        
     backup_before = Path(DATABASE_PATH + ".before_import")
     db_path = Path(DATABASE_PATH)
+    temp_db_path = Path(DATABASE_PATH + ".temp")
+    
     if db_path.exists():
         shutil.copyfile(db_path, backup_before)
-    await bot.download(message.document, destination=db_path)
+        
+    # Скачиваем во временный файл
+    await bot.download(message.document, destination=temp_db_path)
+    
+    # Подменяем файл
+    shutil.move(temp_db_path, db_path)
+    
     await init_db()
     await state.clear()
     await message.answer("✅ База импортирована. Теперь перезапусти сервер на Wispbyte.", reply_markup=main_menu())
@@ -1037,6 +1019,9 @@ async def main():
     await init_db()
     await restore_jobs(bot)
     scheduler.start()
+    
+    # Очищаем накопившиеся запросы, чтобы бот не "сходил с ума" после падения сервера
+    await bot.delete_webhook(drop_pending_updates=True) 
     await dp.start_polling(bot)
 
 
