@@ -34,7 +34,7 @@ from database import (
     init_db,
     update_job_fields,
 )
-from image_generator import STYLE_TITLES, create_sunset_image, russian_date
+from image_generator import IMAGE_FORMATS, STYLE_TITLES, create_sunset_image, russian_date
 from scheduler import (
     calculate_sunset_minus_hour,
     remove_scheduled_job,
@@ -104,6 +104,7 @@ class CreateJobState(StatesGroup):
     waiting_month_day = State()
     waiting_time = State()
     choosing_style = State()
+    choosing_format = State()
     choosing_title = State()
     choosing_text_options = State()
     preview = State()
@@ -113,6 +114,7 @@ class EditJobState(StatesGroup):
     waiting_time = State()
     waiting_title = State()
     choosing_style = State()
+    choosing_format = State()
 
 
 class ImportBackupState(StatesGroup):
@@ -125,16 +127,52 @@ def is_admin(user_id: int) -> bool:
 
 # ---------- Вспомогательные функции для интерфейса ----------
 
+_cleanup_tasks: set[asyncio.Task] = set()
+
+
+async def _safe_delete(chat_id: int, message_id: int | None) -> None:
+    if not message_id:
+        return
+    with suppress(Exception):
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+
+
+async def _delete_after(chat_id: int, message_id: int, delay: int) -> None:
+    await asyncio.sleep(delay)
+    await _safe_delete(chat_id, message_id)
+
+
+def schedule_message_cleanup(message: Message, delay: int = 90) -> None:
+    """Удаляет временное сообщение позже, не блокируя polling."""
+    task = asyncio.create_task(_delete_after(message.chat.id, message.message_id, delay))
+    _cleanup_tasks.add(task)
+    task.add_done_callback(_cleanup_tasks.discard)
+
+
+async def clear_preview_messages(chat_id: int, state: FSMContext) -> None:
+    data = await state.get_data()
+    for message_id in data.get("preview_message_ids", []):
+        await _safe_delete(chat_id, message_id)
+    await state.update_data(preview_message_ids=[])
+
+
 async def delete_user_and_prompt_messages(message: Message, state: FSMContext):
-    """Удаляет сообщение пользователя и предыдущее сообщение-запрос от бота."""
+    """Удаляет ввод пользователя, прошлый запрос и временные предпросмотры."""
+    data = await state.get_data()
+    message_ids = {data.get("prompt_msg_id")}
+    message_ids.update(data.get("transient_message_ids", []))
+    message_ids.update(data.get("preview_message_ids", []))
+
     with suppress(TelegramBadRequest):
         await message.delete()
-    
-    data = await state.get_data()
-    prompt_msg_id = data.get("prompt_msg_id")
-    if prompt_msg_id:
-        with suppress(TelegramBadRequest):
-            await bot.delete_message(chat_id=message.chat.id, message_id=prompt_msg_id)
+    for message_id in message_ids:
+        await _safe_delete(message.chat.id, message_id)
+
+    await state.update_data(
+        prompt_msg_id=None,
+        transient_message_ids=[],
+        preview_message_ids=[],
+    )
 
 
 # ---------- Клавиатуры ----------
@@ -208,11 +246,23 @@ def weekday_keyboard(selected: set[str]):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def style_keyboard(prefix: str = "style"):
-    rows = []
-    for key, label in STYLE_TITLES.items():
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"{prefix}_{key}")])
+    buttons = [
+        InlineKeyboardButton(text=label, callback_data=f"{prefix}_{key}")
+        for key, label in STYLE_TITLES.items()
+    ]
+    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
     rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def format_keyboard(prefix: str = "format"):
+    rows = [
+        [InlineKeyboardButton(text=config["title"], callback_data=f"{prefix}_{key}")]
+        for key, config in IMAGE_FORMATS.items()
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Главное меню", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 def title_keyboard():
     rows = [[InlineKeyboardButton(text=t, callback_data=f"title_{i}")] for i, t in enumerate(TITLE_PRESETS)]
@@ -231,9 +281,13 @@ def text_options_keyboard(show_city: bool, show_weekday: bool):
 def preview_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Сохранить расписание", callback_data="save_job")],
-        [InlineKeyboardButton(text="✏️ Изменить стиль", callback_data="preview_change_style")],
+        [
+            InlineKeyboardButton(text="🎨 Стиль", callback_data="preview_change_style"),
+            InlineKeyboardButton(text="📐 Формат", callback_data="preview_change_format"),
+        ],
         [InlineKeyboardButton(text="❌ Отменить", callback_data="menu")],
     ])
+
 
 def auto_timezone_from_address(address: str) -> str | None:
     low = address.lower()
@@ -288,6 +342,9 @@ async def send_creation_preview(message: Message, state: FSMContext):
     if schedule_type != "once":
         target_date = datetime.now(pytz.timezone(data["timezone"])).strftime("%Y-%m-%d")
 
+    await clear_preview_messages(message.chat.id, state)
+    await _safe_delete(message.chat.id, message.message_id)
+
     sunset_time = calculate_sunset_minus_hour(
         data["location_name"],
         data["latitude"],
@@ -295,20 +352,30 @@ async def send_creation_preview(message: Message, state: FSMContext):
         data["timezone"],
         target_date,
     )
-    image_path = create_sunset_image(
+    image_path = await asyncio.to_thread(
+        create_sunset_image,
         sunset_time=sunset_time,
         publish_date=target_date,
-        style=data.get("image_style", "classic"),
+        style=data.get("image_style", "modern"),
         title_text=data.get("title_text", "Заход солнца"),
         location_name=data["location_name"],
         show_city=bool(data.get("show_city", False)),
         show_weekday=bool(data.get("show_weekday", False)),
+        image_format=data.get("image_format", "16:9"),
     )
 
-    await message.answer_photo(FSInputFile(image_path))
-    await message.answer(
-        "Так будет выглядеть картинка. Сохранить расписание?",
+    try:
+        preview_message = await message.answer_photo(FSInputFile(image_path))
+    finally:
+        Path(image_path).unlink(missing_ok=True)
+
+    control_message = await message.answer(
+        "✨ Предпросмотр готов. Сохранить расписание или изменить оформление?",
         reply_markup=preview_keyboard(),
+    )
+    await state.update_data(
+        prompt_msg_id=control_message.message_id,
+        preview_message_ids=[preview_message.message_id],
     )
     await state.set_state(CreateJobState.preview)
 
@@ -324,6 +391,8 @@ async def start(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ У вас нет доступа к управлению ботом.")
         return
+    with suppress(TelegramBadRequest):
+        await message.delete()
     await message.answer(
         "🌅 <b>Бот публикации времени захода солнца</b>\n\n"
         "Управление каналами, расписаниями, предпросмотром и историей отправок.",
@@ -334,12 +403,23 @@ async def start(message: Message):
 @dp.message(Command("menu"))
 async def menu_command(message: Message, state: FSMContext):
     if is_admin(message.from_user.id):
+        await delete_user_and_prompt_messages(message, state)
         await state.clear()
         await message.answer("Главное меню:", reply_markup=main_menu())
+
+@dp.message(Command("cancel"))
+async def cancel_command(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await delete_user_and_prompt_messages(message, state)
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=main_menu())
+
 
 @dp.callback_query(F.data == "menu")
 async def menu_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    await clear_preview_messages(callback.message.chat.id, state)
     await state.clear()
     await callback.message.edit_text("Главное меню:", reply_markup=main_menu())
 
@@ -353,6 +433,7 @@ async def help_callback(callback: CallbackQuery):
         "3. Откройте «Каналы и чаты» и добавьте канал через @username или -100... ID.\n"
         "4. Откройте «Расписания» и создайте отправку.\n\n"
         "В канал бот отправляет только картинку, без подписи.\n"
+        "Доступно 10 премиальных стилей и форматы 16:9, 9:16, 1:1, 4:5, 3:2.\n"
         "Поддерживаются: один раз, ежедневно, по выбранным дням недели и ежемесячно.",
         reply_markup=back_to_menu(),
         parse_mode="HTML",
@@ -668,9 +749,33 @@ async def set_time(message: Message, state: FSMContext):
 async def choose_style(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     style = callback.data.replace("style_", "")
+    if style not in STYLE_TITLES:
+        return
+    data = await state.get_data()
     await state.update_data(image_style=style)
+    if data.get("style_return") == "preview":
+        await state.update_data(style_return=None)
+        await send_creation_preview(callback.message, state)
+        return
+    await state.set_state(CreateJobState.choosing_format)
+    await callback.message.edit_text("📐 Выберите формат картинки:", reply_markup=format_keyboard("format"))
+
+
+@dp.callback_query(F.data.startswith("format_"))
+async def choose_format(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    image_format = callback.data.replace("format_", "")
+    if image_format not in IMAGE_FORMATS:
+        return
+    data = await state.get_data()
+    await state.update_data(image_format=image_format)
+    if data.get("format_return") == "preview":
+        await state.update_data(format_return=None)
+        await send_creation_preview(callback.message, state)
+        return
     await state.set_state(CreateJobState.choosing_title)
     await callback.message.edit_text("Выберите заголовок на картинке:", reply_markup=title_keyboard())
+
 
 @dp.callback_query(F.data.startswith("title_"))
 async def choose_title(callback: CallbackQuery, state: FSMContext):
@@ -731,12 +836,25 @@ async def opt_preview(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "preview_change_style")
 async def preview_change_style(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    await clear_preview_messages(callback.message.chat.id, state)
+    await state.update_data(style_return="preview")
     await state.set_state(CreateJobState.choosing_style)
     await callback.message.edit_text("🎨 Выберите стиль картинки:", reply_markup=style_keyboard("style"))
+
+
+@dp.callback_query(F.data == "preview_change_format")
+async def preview_change_format(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await clear_preview_messages(callback.message.chat.id, state)
+    await state.update_data(format_return="preview")
+    await state.set_state(CreateJobState.choosing_format)
+    await callback.message.edit_text("📐 Выберите формат картинки:", reply_markup=format_keyboard("format"))
+
 
 @dp.callback_query(F.data == "save_job")
 async def save_job(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    await clear_preview_messages(callback.message.chat.id, state)
     data = await state.get_data()
     target = await get_target_by_id(data["target_id"])
     if not target:
@@ -755,7 +873,8 @@ async def save_job(callback: CallbackQuery, state: FSMContext):
         publish_date=data.get("publish_date"),
         weekdays=data.get("weekdays", ""),
         month_day=data.get("month_day"),
-        image_style=data.get("image_style", "classic"),
+        image_style=data.get("image_style", "modern"),
+        image_format=data.get("image_format", "16:9"),
         title_text=data.get("title_text", "Заход солнца"),
         show_city=1 if data.get("show_city") else 0,
         show_weekday=1 if data.get("show_weekday") else 0,
@@ -789,7 +908,8 @@ async def jobs_list(callback: CallbackQuery):
             f"{icon} <b>ID {job['id']}</b> — {job['target_title']}\n"
             f"📍 {job['location_name'].split(',')[0]}\n"
             f"🕒 {format_schedule_line(job)}\n"
-            f"🎨 {STYLE_TITLES.get(job['image_style'], job['image_style'])}\n\n"
+            f"🎨 {STYLE_TITLES.get(job['image_style'], job['image_style'])}\n"
+            f"📐 {job['image_format'] or '16:9'}\n\n"
         )
         rows.append([InlineKeyboardButton(text=f"⚙️ Управлять ID {job['id']}", callback_data=f"job_manage_{job['id']}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="schedules_menu")])
@@ -810,6 +930,7 @@ async def job_manage(callback: CallbackQuery):
         [InlineKeyboardButton(text="🧪 Тест в канал сейчас", callback_data=f"job_test_{job_id}")],
         [InlineKeyboardButton(text="✏️ Изменить время", callback_data=f"job_edit_time_{job_id}")],
         [InlineKeyboardButton(text="🎨 Изменить стиль", callback_data=f"job_edit_style_{job_id}")],
+        [InlineKeyboardButton(text="📐 Изменить формат", callback_data=f"job_edit_format_{job_id}")],
         [InlineKeyboardButton(text="🔤 Изменить заголовок", callback_data=f"job_edit_title_{job_id}")],
         [InlineKeyboardButton(text=pause_text, callback_data=f"job_toggle_{job_id}")],
         [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"job_delete_{job_id}")],
@@ -820,15 +941,28 @@ async def job_manage(callback: CallbackQuery):
         f"Канал/чат: <b>{job['target_title']}</b>\n"
         f"Локация: <b>{job['location_name']}</b>\n"
         f"Расписание: <b>{format_schedule_line(job)}</b>\n"
+        f"Стиль: <b>{STYLE_TITLES.get(job['image_style'], job['image_style'])}</b>\n"
+        f"Формат: <b>{job['image_format'] or '16:9'}</b>\n"
         f"Статус: <b>{job['status']}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
         parse_mode="HTML",
     )
 
 async def make_job_image(job):
-    target_date = job["publish_date"] if job["schedule_type"] == "once" else datetime.now(pytz.timezone(job["timezone"])).strftime("%Y-%m-%d")
-    sunset_time = calculate_sunset_minus_hour(job["location_name"], job["latitude"], job["longitude"], job["timezone"], target_date)
-    return create_sunset_image(
+    target_date = (
+        job["publish_date"]
+        if job["schedule_type"] == "once"
+        else datetime.now(pytz.timezone(job["timezone"])).strftime("%Y-%m-%d")
+    )
+    sunset_time = calculate_sunset_minus_hour(
+        job["location_name"],
+        job["latitude"],
+        job["longitude"],
+        job["timezone"],
+        target_date,
+    )
+    image_path = await asyncio.to_thread(
+        create_sunset_image,
         sunset_time=sunset_time,
         publish_date=target_date,
         style=job["image_style"],
@@ -836,18 +970,27 @@ async def make_job_image(job):
         location_name=job["location_name"],
         show_city=bool(job["show_city"]),
         show_weekday=bool(job["show_weekday"]),
-    ), target_date, sunset_time
+        image_format=job["image_format"] or "16:9",
+    )
+    return image_path, target_date, sunset_time
+
 
 @dp.callback_query(F.data.startswith("job_preview_"))
 async def job_preview(callback: CallbackQuery):
-    await callback.answer()
+    await callback.answer("Создаю предпросмотр…")
     job_id = int(callback.data.replace("job_preview_", ""))
     job = await get_job_by_id(job_id, callback.from_user.id)
     if not job:
-        await callback.message.answer("Расписание не найдено")
+        notice = await callback.message.answer("Расписание не найдено")
+        schedule_message_cleanup(notice, 45)
         return
     image_path, _, _ = await make_job_image(job)
-    await callback.message.answer_photo(FSInputFile(image_path))
+    try:
+        preview_message = await callback.message.answer_photo(FSInputFile(image_path))
+        schedule_message_cleanup(preview_message, 90)
+    finally:
+        Path(image_path).unlink(missing_ok=True)
+
 
 @dp.callback_query(F.data.startswith("job_test_"))
 async def job_test(callback: CallbackQuery):
@@ -855,16 +998,28 @@ async def job_test(callback: CallbackQuery):
     job_id = int(callback.data.replace("job_test_", ""))
     job = await get_job_by_id(job_id, callback.from_user.id)
     if not job:
-        await callback.message.answer("Расписание не найдено")
+        notice = await callback.message.answer("Расписание не найдено")
+        schedule_message_cleanup(notice, 45)
         return
+
+    image_path = None
     try:
         image_path, target_date, sunset_time = await make_job_image(job)
         await bot.send_photo(chat_id=job["chat_id"], photo=FSInputFile(image_path))
         await add_send_log(job_id, callback.from_user.id, job["target_id"], "success", target_date, sunset_time)
-        await callback.message.answer("✅ Тестовая картинка отправлена")
-    except Exception as e:
-        await add_send_log(job_id, callback.from_user.id, job["target_id"], "error", "", "", str(e)[:900])
-        await callback.message.answer(f"❌ Ошибка тестовой отправки:\n<code>{str(e)[:900]}</code>", parse_mode="HTML")
+        notice = await callback.message.answer("✅ Тестовая картинка отправлена")
+        schedule_message_cleanup(notice, 45)
+    except Exception as exc:
+        await add_send_log(job_id, callback.from_user.id, job["target_id"], "error", "", "", str(exc)[:900])
+        notice = await callback.message.answer(
+            f"❌ Ошибка тестовой отправки:\n<code>{str(exc)[:900]}</code>",
+            parse_mode="HTML",
+        )
+        schedule_message_cleanup(notice, 90)
+    finally:
+        if image_path:
+            Path(image_path).unlink(missing_ok=True)
+
 
 @dp.callback_query(F.data.startswith("job_toggle_"))
 async def job_toggle(callback: CallbackQuery):
@@ -925,12 +1080,37 @@ async def job_edit_style(callback: CallbackQuery, state: FSMContext):
 async def edit_style_save(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     style = callback.data.replace("editstyle_", "")
+    if style not in STYLE_TITLES:
+        return
     data = await state.get_data()
     job_id = data["edit_job_id"]
     await update_job_fields(job_id, callback.from_user.id, image_style=style)
     await schedule_or_reschedule(job_id, callback.from_user.id)
     await state.clear()
     await callback.message.edit_text("✅ Стиль изменён.", reply_markup=schedules_menu_keyboard())
+
+@dp.callback_query(F.data.startswith("job_edit_format_"))
+async def job_edit_format(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    job_id = int(callback.data.replace("job_edit_format_", ""))
+    await state.update_data(edit_job_id=job_id)
+    await state.set_state(EditJobState.choosing_format)
+    await callback.message.edit_text("Выберите новый формат:", reply_markup=format_keyboard("editformat"))
+
+
+@dp.callback_query(F.data.startswith("editformat_"))
+async def edit_format_save(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    image_format = callback.data.replace("editformat_", "")
+    if image_format not in IMAGE_FORMATS:
+        return
+    data = await state.get_data()
+    job_id = data["edit_job_id"]
+    await update_job_fields(job_id, callback.from_user.id, image_format=image_format)
+    await schedule_or_reschedule(job_id, callback.from_user.id)
+    await state.clear()
+    await callback.message.edit_text("✅ Формат изменён.", reply_markup=schedules_menu_keyboard())
+
 
 @dp.callback_query(F.data.startswith("job_edit_title_"))
 async def job_edit_title(callback: CallbackQuery, state: FSMContext):
