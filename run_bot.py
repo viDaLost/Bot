@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import socket
+import time
 
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand
@@ -15,13 +17,33 @@ logging.basicConfig(
 logger = logging.getLogger("launcher")
 
 
+def configure_fast_network() -> None:
+    """Принудительно использует IPv4 и короткие тайм-ауты для Telegram API.
+
+    На некоторых облачных узлах попытка соединения по IPv6 зависает на десятки
+    секунд перед переключением на IPv4. Это проявляется как ответы через 40–60
+    секунд. Aiogram создаст aiohttp-коннектор с этими параметрами при первом
+    запросе.
+    """
+    connector_init = getattr(bot.session, "_connector_init", None)
+    if isinstance(connector_init, dict):
+        connector_init.update(
+            {
+                "family": socket.AF_INET,
+                "ttl_dns_cache": 300,
+                "enable_cleanup_closed": True,
+            }
+        )
+        logger.info("Telegram transport настроен на IPv4")
+
+
 async def prepare_telegram() -> None:
-    """Подготавливает Telegram API, не завершая приложение при временном тайм-ауте."""
-    for attempt in range(1, 11):
+    """Подготавливает Telegram API без долгого зависания при сетевом сбое."""
+    for attempt in range(1, 6):
         try:
             await bot.delete_webhook(
-                drop_pending_updates=True,
-                request_timeout=60,
+                drop_pending_updates=False,
+                request_timeout=15,
             )
             await bot.set_my_commands(
                 [
@@ -30,24 +52,25 @@ async def prepare_telegram() -> None:
                     BotCommand(command="help", description="Инструкция"),
                     BotCommand(command="cancel", description="Отменить действие"),
                 ],
-                request_timeout=60,
+                request_timeout=15,
             )
             logger.info("Соединение с Telegram API установлено")
             return
         except TelegramNetworkError as exc:
-            delay = min(attempt * 5, 30)
+            delay = min(attempt * 2, 8)
             logger.warning(
-                "Telegram API временно недоступен, попытка %s/10; повтор через %s секунд: %s",
+                "Telegram API временно недоступен, попытка %s/5; повтор через %s секунд: %s",
                 attempt,
                 delay,
                 exc,
             )
             await asyncio.sleep(delay)
 
-    logger.warning("Запускаю polling без предварительного delete_webhook")
+    logger.warning("Запускаю polling без предварительной настройки команд")
 
 
 async def main() -> None:
+    configure_fast_network()
     await init_db()
     await prepare_telegram()
     await restore_jobs(bot)
@@ -61,8 +84,8 @@ async def main() -> None:
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
-            polling_timeout=30,
-            request_timeout=60,
+            polling_timeout=10,
+            request_timeout=15,
             handle_signals=True,
             close_bot_session=False,
         )
@@ -80,7 +103,5 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             break
         except Exception:
-            logger.exception("Бот аварийно остановился; перезапуск через 10 секунд")
-            import time
-
-            time.sleep(10)
+            logger.exception("Бот аварийно остановился; перезапуск через 3 секунды")
+            time.sleep(3)
