@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 import calendar
+import logging
 
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -17,7 +19,8 @@ from database import (
 )
 from image_generator import create_sunset_image
 
-scheduler = AsyncIOScheduler()
+logger = logging.getLogger(__name__)
+scheduler = AsyncIOScheduler(timezone="UTC")
 
 WEEKDAY_NAME_TO_NUM = {
     "monday": 0,
@@ -89,11 +92,13 @@ async def send_job(bot: Bot, job):
             show_weekday=bool(job["show_weekday"]),
         )
 
-        # В канал/чат отправляется только картинка, без подписи.
-        await bot.send_photo(
-            chat_id=job["chat_id"],
-            photo=FSInputFile(image_path),
-        )
+        try:
+            await bot.send_photo(
+                chat_id=job["chat_id"],
+                photo=FSInputFile(image_path),
+            )
+        finally:
+            Path(image_path).unlink(missing_ok=True)
 
         await add_send_log(
             job_id=job["id"],
@@ -110,6 +115,7 @@ async def send_job(bot: Bot, job):
             await update_job_last_sent(job["id"], key)
 
     except Exception as e:
+        logger.exception("Ошибка выполнения расписания %s", job["id"])
         error = str(e)
         await add_send_log(
             job_id=job["id"],
