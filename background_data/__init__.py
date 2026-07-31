@@ -1,4 +1,4 @@
-"""Lazy access to built-in background templates stored in assets/backgrounds."""
+"""Lazy access to built-in split background templates."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ BACKGROUNDS_DIR = Path(__file__).resolve().parent.parent / "assets" / "backgroun
 
 @lru_cache(maxsize=None)
 def get_background_bytes(name: str) -> bytes:
-    path = BACKGROUNDS_DIR / name
-    if not path.is_file():
+    parts = sorted(BACKGROUNDS_DIR.glob(f"{name}.part*"))
+    if not parts:
         raise ValueError(f"Unknown background: {name}")
-    return path.read_bytes()
+    return b"".join(part.read_bytes() for part in parts)
