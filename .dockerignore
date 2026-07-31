@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.venv
+venv
+__pycache__
+*.py[cod]
+*.db
+*.db-*
+generated/
+.DS_Store
