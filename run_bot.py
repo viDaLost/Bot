@@ -8,6 +8,7 @@ from aiogram.types import BotCommand
 
 from bot import bot, dp
 from database import init_db
+from image_editor import router as image_editor_router
 from scheduler import restore_jobs, scheduler
 
 logging.basicConfig(
@@ -18,13 +19,7 @@ logger = logging.getLogger("launcher")
 
 
 def configure_fast_network() -> None:
-    """Принудительно использует IPv4 и короткие тайм-ауты для Telegram API.
-
-    На некоторых облачных узлах попытка соединения по IPv6 зависает на десятки
-    секунд перед переключением на IPv4. Это проявляется как ответы через 40–60
-    секунд. Aiogram создаст aiohttp-коннектор с этими параметрами при первом
-    запросе.
-    """
+    """Принудительно использует IPv4 и короткие тайм-ауты для Telegram API."""
     connector_init = getattr(bot.session, "_connector_init", None)
     if isinstance(connector_init, dict):
         connector_init.update(
@@ -41,18 +36,16 @@ async def prepare_telegram() -> None:
     """Подготавливает Telegram API без долгого зависания при сетевом сбое."""
     for attempt in range(1, 6):
         try:
-            await bot.delete_webhook(
-                drop_pending_updates=False,
-                request_timeout=15,
-            )
+            await bot.delete_webhook(drop_pending_updates=False, request_timeout=12)
             await bot.set_my_commands(
                 [
                     BotCommand(command="start", description="Открыть панель управления"),
                     BotCommand(command="menu", description="Главное меню"),
+                    BotCommand(command="editor", description="Редактор картинки"),
                     BotCommand(command="help", description="Инструкция"),
                     BotCommand(command="cancel", description="Отменить действие"),
                 ],
-                request_timeout=15,
+                request_timeout=12,
             )
             logger.info("Соединение с Telegram API установлено")
             return
@@ -71,6 +64,7 @@ async def prepare_telegram() -> None:
 
 async def main() -> None:
     configure_fast_network()
+    dp.include_router(image_editor_router)
     await init_db()
     await prepare_telegram()
     await restore_jobs(bot)
@@ -84,8 +78,9 @@ async def main() -> None:
         await dp.start_polling(
             bot,
             allowed_updates=dp.resolve_used_update_types(),
-            polling_timeout=10,
-            request_timeout=15,
+            polling_timeout=5,
+            request_timeout=12,
+            handle_as_tasks=True,
             handle_signals=True,
             close_bot_session=False,
         )
