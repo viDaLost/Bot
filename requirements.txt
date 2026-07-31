@@ -1,8 +1,8 @@
-aiogram==3.7.0
-python-dotenv==1.0.1
-aiosqlite==0.20.0
-APScheduler==3.10.4
+aiogram==3.22.0
+python-dotenv==1.1.1
+aiosqlite==0.21.0
+APScheduler==3.11.0
 astral==3.2
-Pillow==10.4.0
+Pillow==11.3.0
 geopy==2.4.1
-pytz==2024.1
+pytz==2025.2
