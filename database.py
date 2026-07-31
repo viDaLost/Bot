@@ -28,7 +28,8 @@ async def init_db():
             schedule_type TEXT DEFAULT 'once',
             weekdays TEXT DEFAULT '',
             month_day INTEGER,
-            image_style TEXT DEFAULT 'classic',
+            image_style TEXT DEFAULT 'modern',
+            image_format TEXT DEFAULT '16:9',
             title_text TEXT DEFAULT 'Заход солнца',
             show_city INTEGER DEFAULT 0,
             show_weekday INTEGER DEFAULT 0,
@@ -57,7 +58,8 @@ async def init_db():
         await _ensure_column(db, "jobs", "schedule_type", "TEXT DEFAULT 'once'")
         await _ensure_column(db, "jobs", "weekdays", "TEXT DEFAULT ''")
         await _ensure_column(db, "jobs", "month_day", "INTEGER")
-        await _ensure_column(db, "jobs", "image_style", "TEXT DEFAULT 'classic'")
+        await _ensure_column(db, "jobs", "image_style", "TEXT DEFAULT 'modern'")
+        await _ensure_column(db, "jobs", "image_format", "TEXT DEFAULT '16:9'")
         await _ensure_column(db, "jobs", "title_text", "TEXT DEFAULT 'Заход солнца'")
         await _ensure_column(db, "jobs", "show_city", "INTEGER DEFAULT 0")
         await _ensure_column(db, "jobs", "show_weekday", "INTEGER DEFAULT 0")
@@ -118,7 +120,8 @@ async def add_job(
     publish_date: str | None = None,
     weekdays: str = "",
     month_day: int | None = None,
-    image_style: str = "classic",
+    image_style: str = "modern",
+    image_format: str = "16:9",
     title_text: str = "Заход солнца",
     show_city: int = 0,
     show_weekday: int = 0,
@@ -129,9 +132,9 @@ async def add_job(
             INSERT INTO jobs(
                 owner_id, target_id, location_name, latitude, longitude,
                 timezone, publish_date, publish_time, schedule_type, weekdays,
-                month_day, image_style, title_text, show_city, show_weekday
+                month_day, image_style, image_format, title_text, show_city, show_weekday
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 owner_id,
@@ -146,6 +149,7 @@ async def add_job(
                 weekdays,
                 month_day,
                 image_style,
+                image_format,
                 title_text,
                 show_city,
                 show_weekday,
@@ -211,7 +215,7 @@ async def get_jobs(owner_id: int):
 async def update_job_fields(job_id: int, owner_id: int, **fields):
     allowed = {
         "publish_date", "publish_time", "schedule_type", "weekdays", "month_day",
-        "image_style", "title_text", "show_city", "show_weekday", "status",
+        "image_style", "image_format", "title_text", "show_city", "show_weekday", "status",
         "location_name", "latitude", "longitude", "timezone", "target_id",
     }
     clean = {k: v for k, v in fields.items() if k in allowed}

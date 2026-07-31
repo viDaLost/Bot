@@ -2,6 +2,7 @@ import asyncio
 import logging
 import socket
 import time
+from pathlib import Path
 
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.types import BotCommand
@@ -16,6 +17,21 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("launcher")
+
+
+def cleanup_generated_files() -> None:
+    """Удаляет временные изображения, оставшиеся после аварийного перезапуска."""
+    generated_dir = Path("generated")
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    removed = 0
+    for path in generated_dir.glob("sunset_*.png"):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            logger.warning("Не удалось удалить временный файл %s", path)
+    if removed:
+        logger.info("Удалено временных изображений при старте: %s", removed)
 
 
 def configure_fast_network() -> None:
@@ -63,6 +79,7 @@ async def prepare_telegram() -> None:
 
 
 async def main() -> None:
+    cleanup_generated_files()
     configure_fast_network()
     dp.include_router(image_editor_router)
     await init_db()
