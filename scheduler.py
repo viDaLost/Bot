@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 import calendar
@@ -82,14 +83,16 @@ async def send_job(bot: Bot, job):
             target_date,
         )
 
-        image_path = create_sunset_image(
+        image_path = await asyncio.to_thread(
+            create_sunset_image,
             sunset_time=sunset_minus_hour,
             publish_date=target_date,
-            style=job["image_style"] or "classic",
+            style=job["image_style"] or "modern",
             title_text=job["title_text"] or "Заход солнца",
             location_name=job["location_name"],
             show_city=bool(job["show_city"]),
             show_weekday=bool(job["show_weekday"]),
+            image_format=job["image_format"] or "16:9",
         )
 
         try:
