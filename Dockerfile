@@ -20,4 +20,4 @@ RUN python -m pip install --upgrade pip \
 COPY . .
 RUN mkdir -p /app/generated /app/data
 
-CMD ["python", "bot.py"]
+CMD ["python", "run_bot.py"]
