@@ -1,119 +1,66 @@
-"""Lazy and resilient access to the embedded background templates."""
+"""Resilient access to built-in background templates."""
 
 from __future__ import annotations
 
 import base64
-import binascii
 import importlib
-import logging
 from functools import lru_cache
 from io import BytesIO
-from typing import Iterable
 
 from PIL import Image
 
-logger = logging.getLogger(__name__)
+try:
+    from background_assets import BACKGROUNDS as EMBEDDED_BACKGROUNDS
+except Exception:  # pragma: no cover
+    EMBEDDED_BACKGROUNDS = {}
 
-MODULES = {
-    "arctic_botanic_paper.jpg": "arctic_botanic_paper",
-    "dune_linen_frame.jpg": "dune_linen_frame",
-    "emerald_terracotta_flow.jpg": "emerald_terracotta_flow",
-    "ivory_carbon_copper.jpg": "ivory_carbon_copper",
-    "modern_midnight_horizon.jpg": "modern_midnight_horizon",
-    "noir_mint_geometry.jpg": "noir_mint_geometry",
-    "ocean_lavender_orbit.jpg": "ocean_lavender_orbit",
-    "rose_emerald_hall.jpg": "rose_emerald_hall",
-    "synth_crystal_silk.jpg": "synth_crystal_silk",
-    "void_zen_room.jpg": "void_zen_room",
+PARTS = {
+    'arctic_botanic_paper.jpg': ['arctic_botanic_paper_00', 'arctic_botanic_paper_01', 'arctic_botanic_paper_02', 'arctic_botanic_paper_03'],
+    'dune_linen_frame.jpg': ['dune_linen_frame_00', 'dune_linen_frame_01', 'dune_linen_frame_02', 'dune_linen_frame_03', 'dune_linen_frame_04'],
+    'emerald_terracotta_flow.jpg': ['emerald_terracotta_flow_00', 'emerald_terracotta_flow_01', 'emerald_terracotta_flow_02', 'emerald_terracotta_flow_03'],
+    'ivory_carbon_copper.jpg': ['ivory_carbon_copper_00', 'ivory_carbon_copper_01', 'ivory_carbon_copper_02', 'ivory_carbon_copper_03'],
+    'modern_midnight_horizon.jpg': ['modern_midnight_horizon_00', 'modern_midnight_horizon_01', 'modern_midnight_horizon_02', 'modern_midnight_horizon_03', 'modern_midnight_horizon_04'],
+    'noir_mint_geometry.jpg': ['noir_mint_geometry_00', 'noir_mint_geometry_01', 'noir_mint_geometry_02', 'noir_mint_geometry_03', 'noir_mint_geometry_04'],
+    'ocean_lavender_orbit.jpg': ['ocean_lavender_orbit_00', 'ocean_lavender_orbit_01', 'ocean_lavender_orbit_02', 'ocean_lavender_orbit_03', 'ocean_lavender_orbit_04'],
+    'rose_emerald_hall.jpg': ['rose_emerald_hall_00', 'rose_emerald_hall_01', 'rose_emerald_hall_02', 'rose_emerald_hall_03', 'rose_emerald_hall_04'],
+    'synth_crystal_silk.jpg': ['synth_crystal_silk_00', 'synth_crystal_silk_01', 'synth_crystal_silk_02', 'synth_crystal_silk_03'],
+    'void_zen_room.jpg': ['void_zen_room_00', 'void_zen_room_01', 'void_zen_room_02', 'void_zen_room_03', 'void_zen_room_04'],
 }
 
 
-def _normalize_payload(value: object) -> str:
-    if isinstance(value, bytes):
-        payload = value.decode("ascii", errors="ignore")
-    else:
-        payload = str(value)
-
-    payload = "".join(payload.split())
-    if payload.lower().startswith("data:") and "," in payload:
-        payload = payload.split(",", 1)[1]
-
-    # A JPEG encoded as base64 normally starts with /9j/. Remove accidental
-    # prefixes that may have appeared while a large resource was published.
-    jpeg_marker = payload.find("/9j/")
-    if jpeg_marker > 0:
-        payload = payload[jpeg_marker:]
-    return payload
+def _validate_image(data: bytes) -> bytes:
+    with Image.open(BytesIO(data)) as image:
+        image.verify()
+    return data
 
 
-def _repair_candidates(payload: str) -> Iterable[str]:
-    """Yield conservative padding/one-character repair candidates."""
-    body = payload.rstrip("=")
-    seen: set[str] = set()
-
-    raw_candidates = [body]
-    if len(body) % 4 == 1:
-        # A base64 payload can never contain 1 data character modulo 4.
-        # The common publication failure is one accidental trailing character.
-        raw_candidates.extend((body[:-1], body[1:]))
-
-    # Also tolerate a short damaged suffix. Every candidate is verified as a
-    # complete image before it can be returned.
-    raw_candidates.extend(body[:-trim] for trim in range(1, 4) if len(body) > trim)
-
-    for candidate in raw_candidates:
-        if not candidate or candidate in seen or len(candidate) % 4 == 1:
-            continue
-        seen.add(candidate)
-        yield candidate + ("=" * (-len(candidate) % 4))
+def _load_from_embedded(name: str) -> bytes | None:
+    payload = EMBEDDED_BACKGROUNDS.get(name)
+    if not payload:
+        return None
+    return _validate_image(base64.b64decode(payload))
 
 
-def _decode_module(module_name: str) -> bytes:
-    module = importlib.import_module(f"{__name__}.{module_name}")
-    payload = _normalize_payload(getattr(module, "DATA", ""))
-    last_error: Exception | None = None
-
-    for candidate in _repair_candidates(payload):
-        try:
-            data = base64.b64decode(candidate, validate=True)
-            if not (data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
-                raise ValueError("decoded resource is not a complete JPEG")
-            with Image.open(BytesIO(data)) as image:
-                image.verify()
-            return data
-        except (binascii.Error, OSError, ValueError) as exc:
-            last_error = exc
-
-    raise ValueError(f"Invalid embedded background {module_name}: {last_error}")
-
-
-def _fallback_names(requested_name: str) -> Iterable[str]:
-    yield requested_name
-    preferred = "modern_midnight_horizon.jpg"
-    if requested_name != preferred:
-        yield preferred
-    for name in MODULES:
-        if name not in {requested_name, preferred}:
-            yield name
+def _load_from_parts(name: str) -> bytes:
+    modules = PARTS[name]
+    encoded = ''.join(importlib.import_module(f'{__name__}.{module}').DATA for module in modules)
+    return _validate_image(base64.b64decode(encoded))
 
 
 @lru_cache(maxsize=None)
 def get_background_bytes(name: str) -> bytes:
-    if name not in MODULES:
-        raise ValueError(f"Unknown background: {name}")
+    if name not in PARTS:
+        raise ValueError(f'Unknown background: {name}')
 
-    failures: list[str] = []
-    for candidate_name in _fallback_names(name):
-        try:
-            data = _decode_module(MODULES[candidate_name])
-            if candidate_name != name:
-                logger.warning(
-                    "Background %s is invalid; using %s instead",
-                    name,
-                    candidate_name,
-                )
+    # Prefer the single embedded asset. These payloads are validated independently
+    # for each style, so one broken module cannot silently replace another style.
+    try:
+        data = _load_from_embedded(name)
+        if data is not None:
             return data
-        except (ImportError, ValueError) as exc:
-            failures.append(f"{candidate_name}: {exc}")
+    except Exception:
+        pass
 
-    raise ValueError("No valid embedded background is available: " + "; ".join(failures))
+    # Fall back only to the split parts of the SAME requested background.
+    # Never substitute a different style: that made several buttons show one image.
+    return _load_from_parts(name)
